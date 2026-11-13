@@ -1,0 +1,44 @@
+﻿# Builds the one-file Windows installer (I-Team-CRM-Setup.exe) from the
+# I-Team-CRM-Windows.zip attached to a release, and attaches it to the same
+# release. Runs by itself when a release is published; can also be run by hand
+# for an existing tag (Actions > Windows Setup.exe > Run workflow).
+name: Windows Setup.exe
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag, for example v0.4.1
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Setup.exe and attach it to the release
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:TAG -notmatch '^v\d+\.\d+\.\d+$') { throw "Unexpected tag '$env:TAG'" }
+          $version = $env:TAG.Substring(1)
+          gh release download $env:TAG --pattern 'I-Team-CRM-Windows.zip' --dir dl
+          if ($LASTEXITCODE -ne 0) { throw 'The release has no I-Team-CRM-Windows.zip' }
+          Expand-Archive dl\I-Team-CRM-Windows.zip -DestinationPath unpacked
+          $exe = Get-ChildItem unpacked -Recurse -Filter 'I-Team CRM.exe' | Select-Object -First 1
+          if (-not $exe) { throw 'I-Team CRM.exe is not in the zip' }
+          if (-not $exe.VersionInfo.ProductVersion.StartsWith($version)) { throw "The zip holds $($exe.VersionInfo.ProductVersion), not $version" }
+          powershell -NoProfile -ExecutionPolicy Bypass -File windows-setup\build-setup.ps1 -App $exe.Directory.FullName -Version $version -Out I-Team-CRM-Setup.exe
+          if ($LASTEXITCODE -ne 0) { throw 'build-setup.ps1 failed' }
+          gh release upload $env:TAG I-Team-CRM-Setup.exe --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'upload failed' }
+          Get-FileHash I-Team-CRM-Setup.exe -Algorithm SHA256 | Format-List
